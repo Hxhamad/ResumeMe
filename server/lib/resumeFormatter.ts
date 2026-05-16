@@ -7,7 +7,7 @@ import type {
   UserInfo
 } from "../../shared/types.js";
 import { applySuggestionDecisions } from "./suggestions.js";
-import { cleanText, compactJoin, isContactLikeLine, looksLikeMissingValue, uniqueStrings } from "./text.js";
+import { cleanText, compactJoin, findKnownTerms, isContactLikeLine, looksLikeMissingValue, parseDelimitedList, uniqueMeaningfulTerms, uniqueStrings } from "./text.js";
 
 export function formatResumeText(
   profile: ResumeProfile,
@@ -23,7 +23,9 @@ export function formatResumeText(
   const summary = accepted.find((suggestion) => suggestion.section === "Professional Summary")?.suggestedRewrite || fallbackSummary(profile, job);
   if (summary) output.push(section("Professional Summary", [summary]));
 
-  const skills = accepted.find((suggestion) => suggestion.section === "Skills")?.suggestedRewrite || profile.skills.join(", ");
+  const skills =
+    accepted.find((suggestion) => suggestion.section === "Skills")?.suggestedRewrite ||
+    uniqueMeaningfulTerms(profile.skills).join(", ");
   if (skills) output.push(section("Core Skills", wrapCommaLine(skills)));
 
   const experienceBlock = formatExperience(profile);
@@ -44,10 +46,10 @@ export function formatResumeText(
 export function generateCoverLetterFallback(profile: ResumeProfile, job: JobExtraction, match: ProfileMatch): string {
   const name = profile.userInfo.fullName || "Candidate";
   const role = job.targetTitle || profile.userInfo.targetRole || "the role";
-  const skills = uniqueStrings([...match.supportedKeywords.map((item) => item.keyword), ...profile.skills]).slice(0, 6).join(", ");
+  const skills = uniqueMeaningfulTerms([...match.supportedKeywords.map((item) => item.keyword), ...profile.skills]).slice(0, 6).join(", ");
   const certs = profile.certifications.map((certification) => certification.name).slice(0, 2).join(", ");
   const experienceSentence = profile.experience.length
-    ? `My profile includes supported work history such as ${profile.experience
+    ? `My submitted profile includes supported work history such as ${profile.experience
         .slice(0, 2)
         .map((entry) => `${entry.title} at ${entry.employer}`)
         .join(" and ")}.`
@@ -56,11 +58,11 @@ export function generateCoverLetterFallback(profile: ResumeProfile, job: JobExtr
 
   return cleanText(`Dear Hiring Team,
 
-I am interested in ${role}. ${name}'s profile shows support for ${skills || "the listed profile skills"}${certs ? ` and includes ${certs}` : ""}.
+I am interested in ${role}. My submitted profile shows support for ${skills || "the listed profile skills"}${certs ? ` and includes ${certs}` : ""}.
 
 ${experienceSentence} The job emphasizes ${job.hardSkills.slice(0, 5).join(", ") || "the responsibilities in the posting"}, and I would keep the resume focused on profile-supported evidence for those areas.
 
-${gaps ? `Before submitting, I would add truthful evidence for these missing requirements if applicable: ${gaps}.` : "The provided profile appears to cover the main listed requirements without adding unsupported claims."}
+${gaps ? "I am careful to keep application materials grounded in verified facts, so any requirements not supported by the submitted profile should be added only with truthful examples." : "The provided profile appears to cover the main listed requirements without adding unsupported claims."}
 
 Sincerely,
 ${name}`);
@@ -68,7 +70,7 @@ ${name}`);
 
 export function feedbackSummaryFallback(match: ProfileMatch): string[] {
   return [
-    `${match.supportedKeywords.length} keywords are supported by the profile.`,
+    `${match.supportedKeywords.length} keywords are strongly supported; ${match.weaklySupportedKeywords.length} are weakly supported by the profile.`,
     `${match.mustHaveGaps.length} must-have requirements need more evidence.`,
     match.unsupportedClaims.length
       ? "Unsupported claims were kept out of the generated resume."
@@ -118,7 +120,7 @@ function formatHeader(userInfo: UserInfo): string {
 
 function fallbackSummary(profile: ResumeProfile, job?: JobExtraction): string {
   const role = job?.targetTitle || profile.userInfo.targetRole || "";
-  const skills = profile.skills.slice(0, 8).join(", ");
+  const skills = uniqueMeaningfulTerms(profile.skills).slice(0, 8).join(", ");
   const certs = profile.certifications.map((certification) => certification.name).slice(0, 2).join(", ");
   if (profile.summary && (profile.experience.length || !/\b(experience|expertise|expert|years?)\b/i.test(profile.summary))) return profile.summary;
   if (profile.experience.length) {
@@ -138,7 +140,7 @@ function section(title: string, lines: string[]): string {
 }
 
 function wrapCommaLine(value: string): string[] {
-  return uniqueStrings(value.split(/,|;|\n/)).map((item) => `- ${item}`);
+  return uniqueMeaningfulTerms(value.split(/,|;|\n/)).map((item) => `- ${item}`);
 }
 
 function formatExperience(profile: ResumeProfile): string {
@@ -162,9 +164,14 @@ function formatProjects(profile: ResumeProfile): string {
     .filter((project) => !looksLikeMissingValue(project.name))
     .map((project) => {
       const lines = [project.name];
-      const bullets = uniqueStrings([project.description || "", ...project.bullets]);
+      const toolBullets = project.bullets.filter((bullet) => /^tools?\s*:/i.test(cleanText(bullet.replace(/^[-*â€¢]\s*/, ""))));
+      const inlineTools = toolBullets.flatMap((bullet) => parseDelimitedList(cleanText(bullet).replace(/^[-*â€¢]\s*tools?\s*:\s*/i, "")));
+      const tools = uniqueMeaningfulTerms([...project.tools, ...inlineTools, ...findKnownTerms(inlineTools.join(", "))]);
+      const bullets = uniqueStrings([project.description || "", ...project.bullets]).filter(
+        (bullet) => !/^tools?\s*:/i.test(cleanText(bullet.replace(/^[-*â€¢]\s*/, "")))
+      );
       lines.push(...bullets.map((bullet) => `- ${bullet}`));
-      if (project.tools.length) lines.push(`- Tools: ${project.tools.join(", ")}`);
+      if (tools.length) lines.push(`- Tools: ${tools.join(", ")}`);
       return lines.join("\n");
     });
   return blocks.length ? section("Projects", blocks) : "";

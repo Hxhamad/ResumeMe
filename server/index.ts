@@ -79,7 +79,7 @@ app.post("/api/analyze-job", async (request, response) => {
     timeoutMs: 4500
   });
 
-  response.json({ job: result.data, warnings: result.warnings, aiUsed: result.aiUsed });
+  response.json({ job: result.data, warnings: result.warnings, serviceWarnings: result.serviceWarnings, aiUsed: result.aiUsed });
 });
 
 app.post("/api/parse-profile", async (request, response) => {
@@ -100,7 +100,7 @@ app.post("/api/parse-profile", async (request, response) => {
     timeoutMs: 4500
   });
 
-  response.json({ profile: result.data, warnings: result.warnings, aiUsed: result.aiUsed });
+  response.json({ profile: result.data, warnings: result.warnings, serviceWarnings: result.serviceWarnings, aiUsed: result.aiUsed });
 });
 
 app.post("/api/match-profile", async (request, response) => {
@@ -117,7 +117,7 @@ app.post("/api/match-profile", async (request, response) => {
     timeoutMs: 4500
   });
 
-  response.json({ profile, job, match: result.data, warnings: result.warnings, aiUsed: result.aiUsed });
+  response.json({ profile, job, match: result.data, warnings: result.warnings, serviceWarnings: result.serviceWarnings, aiUsed: result.aiUsed });
 });
 
 app.post("/api/generate-suggestions", async (request, response) => {
@@ -135,7 +135,7 @@ app.post("/api/generate-suggestions", async (request, response) => {
     timeoutMs: 4500
   });
 
-  response.json({ profile, job, match, suggestions: result.data, warnings: result.warnings, aiUsed: result.aiUsed });
+  response.json({ profile, job, match, suggestions: result.data, warnings: result.warnings, serviceWarnings: result.serviceWarnings, aiUsed: result.aiUsed });
 });
 
 app.post("/api/apply-suggestions", (request, response) => {
@@ -178,7 +178,8 @@ app.post("/api/generate-resume", async (request, response) => {
     ats,
     resumeText: safeResumeText,
     feedbackSummary: result.data.feedbackSummary,
-    warnings: [...result.warnings, ...result.data.warnings, ...guarded.warnings],
+    warnings: [...result.data.warnings, ...guarded.warnings],
+    serviceWarnings: result.serviceWarnings,
     aiUsed: result.aiUsed
   });
 });
@@ -205,7 +206,8 @@ app.post("/api/generate-cover-letter", async (request, response) => {
 
   response.json({
     coverLetter: result.data.coverLetter,
-    warnings: [...result.warnings, ...result.data.warnings],
+    warnings: result.data.warnings,
+    serviceWarnings: result.serviceWarnings,
     aiUsed: result.aiUsed
   });
 });
@@ -223,6 +225,7 @@ app.post("/api/full-generate", async (request, response) => {
   const profileFallback = parseProfileFallback(profileText, { ...input.userInfo, targetRole });
   const jobFallback = parseJobFallback(jobDescription, targetRole);
   const warnings: string[] = [];
+  const serviceWarnings: string[] = [];
   const [profileResult, jobResult] = await Promise.all([
     callMiniMaxJson({
       taskName: "profile parsing",
@@ -243,9 +246,11 @@ app.post("/api/full-generate", async (request, response) => {
   ]);
   warnings.push(...profileResult.warnings);
   warnings.push(...jobResult.warnings);
+  serviceWarnings.push(...profileResult.serviceWarnings);
+  serviceWarnings.push(...jobResult.serviceWarnings);
 
   const matchFallback = matchProfileFallback(profileResult.data, jobResult.data);
-  let matchResult = { data: matchFallback, warnings: [] as string[], aiUsed: false };
+  let matchResult = { data: matchFallback, warnings: [] as string[], serviceWarnings: [] as string[], aiUsed: false };
   if (profileResult.aiUsed && jobResult.aiUsed) {
     matchResult = await callMiniMaxJson({
       taskName: "profile matching",
@@ -256,12 +261,13 @@ app.post("/api/full-generate", async (request, response) => {
       timeoutMs: 5000
     });
     warnings.push(...matchResult.warnings);
+    serviceWarnings.push(...matchResult.serviceWarnings);
   } else {
-    warnings.push("MiniMax downstream steps skipped after extraction fallback to keep generation responsive.");
+    serviceWarnings.push("AI downstream steps used deterministic fallbacks after extraction fallback. You can continue.");
   }
 
   const suggestionFallback = generateSuggestionsFallback(profileResult.data, jobResult.data, matchResult.data);
-  let suggestionResult = { data: suggestionFallback, warnings: [] as string[], aiUsed: false };
+  let suggestionResult = { data: suggestionFallback, warnings: [] as string[], serviceWarnings: [] as string[], aiUsed: false };
   if (matchResult.aiUsed) {
     suggestionResult = await callMiniMaxJson({
       taskName: "suggestion generation",
@@ -272,6 +278,7 @@ app.post("/api/full-generate", async (request, response) => {
       timeoutMs: 5000
     });
     warnings.push(...suggestionResult.warnings);
+    serviceWarnings.push(...suggestionResult.serviceWarnings);
   }
 
   const resumeFallbackText = formatResumeText(profileResult.data, jobResult.data, suggestionResult.data, []);
@@ -281,8 +288,8 @@ app.post("/api/full-generate", async (request, response) => {
     feedbackSummary: feedbackSummaryFallback(matchResult.data),
     warnings: [] as string[]
   };
-  let resumeResult = { data: generatedFallback, warnings: [] as string[], aiUsed: false };
-  let coverResult = { data: generatedFallback, warnings: [] as string[], aiUsed: false };
+  let resumeResult = { data: generatedFallback, warnings: [] as string[], serviceWarnings: [] as string[], aiUsed: false };
+  let coverResult = { data: generatedFallback, warnings: [] as string[], serviceWarnings: [] as string[], aiUsed: false };
   if (suggestionResult.aiUsed) {
     [resumeResult, coverResult] = await Promise.all([
       callMiniMaxJson({
@@ -304,6 +311,7 @@ app.post("/api/full-generate", async (request, response) => {
     ]);
     warnings.push(...resumeResult.warnings, ...resumeResult.data.warnings);
     warnings.push(...coverResult.warnings, ...coverResult.data.warnings);
+    serviceWarnings.push(...resumeResult.serviceWarnings, ...coverResult.serviceWarnings);
   }
 
   const guarded = guardResumeText(profileResult.data, resumeResult.data.resumeText || resumeFallbackText, resumeFallbackText);
@@ -320,6 +328,7 @@ app.post("/api/full-generate", async (request, response) => {
     coverLetter: coverResult.data.coverLetter || generatedFallback.coverLetter,
     feedbackSummary: resumeResult.data.feedbackSummary.length ? resumeResult.data.feedbackSummary : generatedFallback.feedbackSummary,
     warnings: [...new Set([...warnings, ...guarded.warnings])],
+    serviceWarnings: [...new Set(serviceWarnings)],
     aiUsed: profileResult.aiUsed || jobResult.aiUsed || matchResult.aiUsed || suggestionResult.aiUsed || resumeResult.aiUsed || coverResult.aiUsed
   });
 });

@@ -7,8 +7,10 @@ import {
   buildSummaryOptions,
   createBlankProfile,
   emptySections,
+  splitTextList,
   profileToEvidenceText,
-  serializeSections
+  serializeSections,
+  suggestionsForStep
 } from "../src/lib/wizardSafety";
 import type { Suggestion } from "../shared/types";
 
@@ -59,6 +61,39 @@ describe("wizard safety helpers", () => {
     expect(resume).not.toMatch(/Not specified/i);
   });
 
+  it("canonicalizes duplicate skill chips in wizard-edited lists", () => {
+    const skills = splitTextList("GitHub Actions, GitHub, REST APIs, REST, API, NodeJS");
+
+    expect(skills).toContain("GitHub Actions");
+    expect(skills).toContain("REST APIs");
+    expect(skills).toContain("Node.js");
+    expect(skills).not.toContain("GitHub");
+    expect(skills).not.toContain("REST");
+    expect(skills).not.toContain("API");
+  });
+
+  it("omits duplicate project tool bullets from wizard evidence text", () => {
+    const profile = parseProfileFallback(`Maya Chen
+Projects
+Resume Optimizer
+- Created a React and Node.js tool.
+- Tools: React, Node.js
+Skills: React, Node.js`);
+    const evidenceText = profileToEvidenceText(profile, profile.userInfo);
+    const toolLines = evidenceText.match(/^- Tools: React, Node\.js$/gm) ?? [];
+
+    expect(toolLines).toHaveLength(1);
+  });
+
+  it("does not reparse wizard Tools lines as skills", () => {
+    const profile = parseProfileFallback(minimalProfile);
+    const evidenceText = profileToEvidenceText({ ...profile, tools: ["TypeScript"] }, profile.userInfo);
+    const reparsed = parseProfileFallback(evidenceText, profile.userInfo);
+
+    expect(evidenceText).toMatch(/^Tools: TypeScript$/m);
+    expect(reparsed.skills).not.toContain("Tools: TypeScript");
+  });
+
   it("does not apply unsupported high-risk suggestions to resume sections", () => {
     const sections = emptySections();
     sections.skills = "- TypeScript";
@@ -78,6 +113,44 @@ describe("wizard safety helpers", () => {
     expect(result.applied).toBe(false);
     expect(result.sections.skills).toBe("- TypeScript");
     expect(result.message).toMatch(/Needs evidence/i);
+  });
+
+  it("keeps skills and experience suggestions scoped for inline rendering", () => {
+    const suggestions: Suggestion[] = [
+      {
+        id: "skills",
+        section: "Skills",
+        originalText: "TypeScript",
+        suggestedRewrite: "TypeScript, Docker",
+        reason: "Supported skills.",
+        confidence: 80,
+        riskLevel: "low",
+        profileSupported: true
+      },
+      {
+        id: "experience",
+        section: "Professional Experience",
+        originalText: "Built dashboards",
+        suggestedRewrite: "Built dashboards",
+        reason: "Supported bullet.",
+        confidence: 80,
+        riskLevel: "low",
+        profileSupported: true
+      },
+      {
+        id: "missing",
+        section: "Missing Requirements",
+        originalText: "Missing profile evidence",
+        suggestedRewrite: "Add real evidence for Kubernetes",
+        reason: "Needs evidence.",
+        confidence: 92,
+        riskLevel: "high",
+        profileSupported: false
+      }
+    ];
+
+    expect(suggestionsForStep(suggestions, "skills").map((suggestion) => suggestion.id)).toEqual(["skills", "missing"]);
+    expect(suggestionsForStep(suggestions, "experience").map((suggestion) => suggestion.id)).toEqual(["experience", "missing"]);
   });
 
   it("does not turn a safe summary sentence into a certification during wizard regeneration", () => {

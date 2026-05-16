@@ -14,7 +14,16 @@ import type {
   UserInfo
 } from "../../shared/types.js";
 import { asArray, asBoolean, asNumber, asString, isRecord } from "./json.js";
-import { clampScore, cleanText, EMPTY_USER_INFO, includesTerm, looksLikeMissingValue, normalizeTerm, uniqueStrings } from "./text.js";
+import {
+  clampScore,
+  cleanText,
+  EMPTY_USER_INFO,
+  includesTerm,
+  looksLikeMissingValue,
+  normalizeTerm,
+  uniqueMeaningfulTerms,
+  uniqueStrings
+} from "./text.js";
 
 export function validateUserInfo(value: unknown, fallback: UserInfo = EMPTY_USER_INFO): UserInfo {
   const record = isRecord(value) ? value : {};
@@ -39,10 +48,10 @@ export function validateResumeProfile(value: unknown, fallback: ResumeProfile): 
     userInfo: validateUserInfo(record.userInfo, fallback.userInfo),
     rawText,
     summary: cleanText(asString(record.summary) || fallback.summary),
-    skills: uniqueStrings([...asStringArray(record.skills), ...fallback.skills], 80).filter(
-      (item) => fallbackSkills.has(normalizeTerm(item)) || hasEvidence(rawText, item)
+    skills: uniqueMeaningfulTerms([...asStringArray(record.skills), ...fallback.skills], 80).filter(
+      (item) => isSkillCandidate(item) && (fallbackSkills.has(normalizeTerm(item)) || hasEvidence(rawText, item))
     ),
-    tools: uniqueStrings([...asStringArray(record.tools), ...fallback.tools], 80).filter(
+    tools: uniqueMeaningfulTerms([...asStringArray(record.tools), ...fallback.tools], 80).filter(
       (item) => fallbackTools.has(normalizeTerm(item)) || hasEvidence(rawText, item)
     ),
     metrics: uniqueStrings([...asStringArray(record.metrics), ...fallback.metrics], 40).filter(
@@ -66,9 +75,9 @@ export function validateJobExtraction(value: unknown, fallback: JobExtraction): 
     seniority: cleanText(asString(record.seniority) || fallback.seniority),
     mustHaveRequirements: asArray(record.mustHaveRequirements).map((item) => validateRequirement(item, "must")),
     preferredRequirements: asArray(record.preferredRequirements).map((item) => validateRequirement(item, "preferred")),
-    hardSkills: uniqueStrings([...asStringArray(record.hardSkills), ...fallback.hardSkills], 80),
+    hardSkills: uniqueMeaningfulTerms([...asStringArray(record.hardSkills), ...fallback.hardSkills], 80),
     softSkills: uniqueStrings([...asStringArray(record.softSkills), ...fallback.softSkills], 40),
-    toolsPlatforms: uniqueStrings([...asStringArray(record.toolsPlatforms), ...fallback.toolsPlatforms], 60),
+    toolsPlatforms: uniqueMeaningfulTerms([...asStringArray(record.toolsPlatforms), ...fallback.toolsPlatforms], 60),
     certifications: uniqueStrings([...asStringArray(record.certifications), ...fallback.certifications], 40),
     responsibilities: uniqueStrings([...asStringArray(record.responsibilities), ...fallback.responsibilities], 30),
     industryKeywords: uniqueStrings([...asStringArray(record.industryKeywords), ...fallback.industryKeywords], 40),
@@ -175,7 +184,7 @@ function validateProjectEntry(value: unknown): ProjectEntry {
   return {
     name: cleanText(asString(record.name)),
     description: cleanText(asString(record.description)),
-    tools: uniqueStrings(asStringArray(record.tools), 24),
+    tools: uniqueMeaningfulTerms(asStringArray(record.tools), 24),
     bullets: uniqueStrings(asStringArray(record.bullets), 12),
     link: cleanText(asString(record.link))
   };
@@ -245,4 +254,8 @@ function hasEntryEvidence(rawText: string, title: string, employer: string, fall
     (entry) => normalizeTerm(entry.title) === normalizedTitle && normalizeTerm(entry.employer) === normalizedEmployer
   );
   return fallbackHasEntry || (hasEvidence(rawText, title) && hasEvidence(rawText, employer));
+}
+
+function isSkillCandidate(item: string): boolean {
+  return !/^(tools?|tooling|platforms?)\s*:/i.test(cleanText(item));
 }

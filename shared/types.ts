@@ -143,6 +143,7 @@ export interface GenerateResponse {
   coverLetter: string;
   feedbackSummary: string[];
   warnings: string[];
+  serviceWarnings?: string[];
 }
 
 export interface FullGenerateInput {

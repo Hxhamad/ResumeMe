@@ -1,5 +1,5 @@
 import type { JobExtraction, ProfileMatch, ResumeProfile, Suggestion, SuggestionDecision } from "../../shared/types.js";
-import { cleanText, containsMetric, makeSuggestionId, uniqueStrings } from "./text.js";
+import { cleanText, containsMetric, makeSuggestionId, uniqueMeaningfulTerms } from "./text.js";
 
 export function generateSuggestionsFallback(profile: ResumeProfile, job: JobExtraction, match: ProfileMatch): Suggestion[] {
   const suggestions: Suggestion[] = [];
@@ -21,7 +21,7 @@ export function generateSuggestionsFallback(profile: ResumeProfile, job: JobExtr
   }
 
   if (supportedKeywordNames.length) {
-    const skillsRewrite = uniqueStrings([...profile.skills, ...supportedKeywordNames]).join(", ");
+    const skillsRewrite = uniqueMeaningfulTerms([...profile.skills, ...supportedKeywordNames]).join(", ");
     suggestions.push({
       id: makeSuggestionId("Skills", suggestions.length, skillsRewrite),
       section: "Skills",

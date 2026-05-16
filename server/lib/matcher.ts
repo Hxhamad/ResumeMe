@@ -1,9 +1,9 @@
 import type { JobExtraction, KeywordMatch, ProfileMatch, Requirement, ResumeProfile } from "../../shared/types.js";
-import { clampScore, cleanText, includesTerm, normalizeTerm, uniqueStrings } from "./text.js";
+import { clampScore, cleanText, includesTerm, normalizeTerm, uniqueMeaningfulTerms, uniqueStrings } from "./text.js";
 
 export function matchProfileFallback(profile: ResumeProfile, job: JobExtraction): ProfileMatch {
   const profileEvidence = profileEvidenceText(profile);
-  const keywords = uniqueStrings([
+  const keywords = uniqueMeaningfulTerms([
     ...job.hardSkills,
     ...job.toolsPlatforms,
     ...job.certifications,

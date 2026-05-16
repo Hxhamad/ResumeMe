@@ -99,6 +99,7 @@ export function App() {
   const [loadingKey, setLoadingKey] = useState<LoadingKey>("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [serviceStatus, setServiceStatus] = useState("");
   const [copied, setCopied] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
 
@@ -154,8 +155,9 @@ export function App() {
     setLoadingKey("profile");
     setError("");
     setNotice("");
+    setServiceStatus("");
     try {
-      const data = await postJson<{ profile: ResumeProfile; warnings: string[] }>("/api/parse-profile", {
+      const data = await postJson<{ profile: ResumeProfile; warnings: string[]; serviceWarnings?: string[] }>("/api/parse-profile", {
         profileText,
         userInfo: mergedUserInfo
       });
@@ -166,6 +168,7 @@ export function App() {
       setTargetRole(parsedRole);
       setSections(buildSectionsFromProfile({ ...data.profile, userInfo: parsedUserInfo }));
       setSummaryOptions(buildSummaryOptions({ ...data.profile, userInfo: parsedUserInfo }, job ?? undefined));
+      setServiceStatus(formatServiceWarnings(data.serviceWarnings));
       setNotice(data.warnings.length ? data.warnings.join(" ") : "Profile evidence parsed. Review and edit anything the parser missed.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "ResumeMe could not parse the profile.");
@@ -178,14 +181,16 @@ export function App() {
     setLoadingKey("job");
     setError("");
     setNotice("");
+    setServiceStatus("");
     try {
-      const data = await postJson<{ job: JobExtraction; warnings: string[] }>("/api/analyze-job", {
+      const data = await postJson<{ job: JobExtraction; warnings: string[]; serviceWarnings?: string[] }>("/api/analyze-job", {
         jobDescription,
         targetRole
       });
       setJob(data.job);
       if (!targetRole && data.job.targetTitle) updateTargetRole(data.job.targetTitle);
       setSummaryOptions(buildSummaryOptions(activeProfile, data.job));
+      setServiceStatus(formatServiceWarnings(data.serviceWarnings));
       setNotice(data.warnings.length ? data.warnings.join(" ") : "Job target analyzed. Confirm the requirements before moving on.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "ResumeMe could not analyze the job.");
@@ -198,6 +203,7 @@ export function App() {
     setLoadingKey("suggestions");
     setError("");
     setNotice("");
+    setServiceStatus("");
     try {
       const data = await postJson<{
         profile: ResumeProfile;
@@ -205,6 +211,7 @@ export function App() {
         match: ProfileMatch;
         suggestions: Suggestion[];
         warnings: string[];
+        serviceWarnings?: string[];
       }>("/api/generate-suggestions", requestPayload());
       setProfile(data.profile);
       setJob(data.job);
@@ -212,6 +219,7 @@ export function App() {
       setSuggestions(data.suggestions);
       setSummaryOptions(buildSummaryOptions(data.profile, data.job));
       if (!summaryDraft) setSummaryDraft(buildSummaryOptions(data.profile, data.job)[0]?.text ?? "");
+      setServiceStatus(formatServiceWarnings(data.serviceWarnings));
       setNotice(data.warnings.length ? data.warnings.join(" ") : "Section-specific suggestions are ready.");
       return data;
     } catch (caught) {
@@ -226,6 +234,7 @@ export function App() {
     setLoadingKey("final");
     setError("");
     setNotice("");
+    setServiceStatus("");
     try {
       const payloadProfile = summaryDraft.trim()
         ? { ...requestProfile(), summary: summaryDraft.trim() }
@@ -245,9 +254,10 @@ export function App() {
       setCoverLetter(data.coverLetter || "");
       setFeedbackSummary(data.feedbackSummary);
       setWarnings(data.warnings);
+      setServiceStatus(formatServiceWarnings(data.serviceWarnings));
       setSummaryOptions(buildSummaryOptions(data.profile, data.job));
       setActiveStep(nextStep);
-      setNotice(data.warnings.length ? data.warnings.join(" ") : "ATS review and final text are ready.");
+      setNotice(data.warnings.length ? "Generated output was checked. Review safety warnings below." : "ATS review and final text are ready.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "ResumeMe could not generate final output.");
     } finally {
@@ -279,7 +289,20 @@ export function App() {
   }
 
   async function copyText(label: string, text: string) {
-    await navigator.clipboard.writeText(text);
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
     setCopied(label);
     window.setTimeout(() => setCopied(""), 1400);
   }
@@ -295,9 +318,14 @@ export function App() {
   }
 
   function move(delta: number) {
+    if (delta < 0 && activeStep === "basics" && startMode === "optimize" && jobDescription.trim()) {
+      setActiveStep("job");
+      setNotice("Back to the job target you analyzed.");
+      return;
+    }
     if (delta > 0 && activeStep === "job" && startMode === "optimize" && !profile && !profileText.trim()) {
       setActiveStep("basics");
-      setNotice("Add your basics and profile evidence before editing resume sections for this job.");
+      setNotice("Job target saved. Add basics and profile evidence before section suggestions.");
       return;
     }
     const next = STEPS[Math.min(Math.max(activeIndex + delta, 0), STEPS.length - 1)];
@@ -335,6 +363,7 @@ export function App() {
             </div>
           ) : null}
           {notice ? <div className="notice-state">{notice}</div> : null}
+          {serviceStatus ? <div className="service-state" aria-live="polite">{serviceStatus}</div> : null}
           {loadingKey ? (
             <div className="notice-state">
               ResumeMe is working. If the AI service is slow, deterministic fallback will return so you can keep moving.
@@ -347,6 +376,8 @@ export function App() {
               setMode={setStartMode}
               onChoose={(mode) => {
                 setStartMode(mode);
+                setNotice(mode === "optimize" ? "Paste and analyze the job first. Then add basics and profile evidence before suggestions." : "");
+                setServiceStatus("");
                 setActiveStep(mode === "optimize" ? "job" : mode === "scratch" ? "basics" : "profile");
               }}
             />
@@ -376,16 +407,28 @@ export function App() {
             />
           ) : null}
           {activeStep === "experience" ? (
-            <ExperienceStep profile={activeProfile} updateProfile={updateProfile} refreshSuggestions={refreshSuggestions} loading={loadingKey === "suggestions"} />
+            <ExperienceStep
+              profile={activeProfile}
+              updateProfile={updateProfile}
+              refreshSuggestions={refreshSuggestions}
+              loading={loadingKey === "suggestions"}
+              suggestions={currentSuggestions}
+              copied={copied}
+              onDecide={decideSuggestion}
+              onCopy={(label, text) => copyText(label, text)}
+            />
           ) : null}
           {activeStep === "skills" ? (
             <SkillsStep
               profile={activeProfile}
               updateProfile={updateProfile}
               match={match}
-              suggestions={suggestions}
+              suggestions={currentSuggestions}
               refreshSuggestions={refreshSuggestions}
               loading={loadingKey === "suggestions"}
+              copied={copied}
+              onDecide={decideSuggestion}
+              onCopy={(label, text) => copyText(label, text)}
             />
           ) : null}
           {activeStep === "summary" ? (
@@ -464,7 +507,8 @@ export function App() {
           match={match}
           notice={notice}
           onDecide={decideSuggestion}
-          onCopy={(text) => copyText("suggestion", text)}
+          copied={copied}
+          onCopy={(label, text) => copyText(label, text)}
         />
       </section>
     </main>
@@ -513,7 +557,7 @@ function StartStep(props: { mode: StartMode; setMode: (mode: StartMode) => void;
   const choices: Array<{ mode: StartMode; title: string; body: string; icon: JSX.Element }> = [
     { mode: "paste", title: "Paste existing resume", body: "Start by pasting current evidence and let ResumeMe parse it.", icon: <Clipboard size={22} /> },
     { mode: "scratch", title: "Start from scratch", body: "Add contact details, skills, and real evidence section by section.", icon: <PenLine size={22} /> },
-    { mode: "optimize", title: "Optimize for a job", body: "Paste a job first, then build only profile-supported matching content.", icon: <BriefcaseBusiness size={22} /> }
+    { mode: "optimize", title: "Optimize for a job", body: "Analyze the job first, then ResumeMe collects basics and profile evidence before suggestions.", icon: <BriefcaseBusiness size={22} /> }
   ];
   return (
     <StepPanel eyebrow="Start" title="Choose how you want to build">
@@ -670,6 +714,10 @@ function ExperienceStep(props: {
   updateProfile: (updater: (current: ResumeProfile) => ResumeProfile) => void;
   refreshSuggestions: () => void;
   loading: boolean;
+  suggestions: Suggestion[];
+  copied: string;
+  onDecide: (suggestion: Suggestion, status: "accepted" | "rejected") => void;
+  onCopy: (label: string, text: string) => void;
 }) {
   const realEntries = props.profile.experience.filter(isCompleteExperience).length;
   return (
@@ -721,6 +769,14 @@ function ExperienceStep(props: {
           Get Suggestions
         </button>
       </div>
+      <InlineSuggestionSection
+        title="Experience Suggestions"
+        suggestions={props.suggestions}
+        empty="Run Get Suggestions to review supported bullet rewrites and evidence prompts for this section."
+        copied={props.copied}
+        onDecide={props.onDecide}
+        onCopy={props.onCopy}
+      />
     </StepPanel>
   );
 }
@@ -732,6 +788,9 @@ function SkillsStep(props: {
   suggestions: Suggestion[];
   refreshSuggestions: () => void;
   loading: boolean;
+  copied: string;
+  onDecide: (suggestion: Suggestion, status: "accepted" | "rejected") => void;
+  onCopy: (label: string, text: string) => void;
 }) {
   const safe = props.suggestions.filter((suggestion) => suggestion.section.toLowerCase().includes("skill") && suggestion.profileSupported && suggestion.riskLevel !== "high");
   const needsEvidence = props.suggestions.filter((suggestion) => !suggestion.profileSupported || suggestion.riskLevel === "high");
@@ -758,6 +817,14 @@ function SkillsStep(props: {
         <SuggestionMiniList title="Safe to include" suggestions={safe} />
         <SuggestionMiniList title="Needs evidence" suggestions={needsEvidence.filter((item) => item.section.toLowerCase().includes("missing") || item.section.toLowerCase().includes("skill"))} />
       </div>
+      <InlineSuggestionSection
+        title="Skills Suggestions"
+        suggestions={props.suggestions}
+        empty="Run Analyze Fit to review supported skill additions and missing-evidence prompts."
+        copied={props.copied}
+        onDecide={props.onDecide}
+        onCopy={props.onCopy}
+      />
     </StepPanel>
   );
 }
@@ -846,7 +913,7 @@ function FinalStep(props: {
       <div className="button-row output-actions">
         <button className="icon-button" onClick={() => props.copyText("resume", props.resumeText)} disabled={!props.resumeText}>
           <Clipboard size={16} />
-          {props.copied === "resume" ? "Copied" : "Copy Resume"}
+          {props.copied === "resume" ? "Resume copied" : "Copy Resume"}
         </button>
         <button className="icon-button" onClick={props.downloadResume} disabled={!props.resumeText}>
           <Download size={16} />
@@ -858,25 +925,33 @@ function FinalStep(props: {
         </button>
       </div>
       <div className="output-grid">
-        <div className="output-column">
-          <h3>Resume Text</h3>
+        <div className="output-column output-column--resume">
+          <div className="output-column__heading">
+            <h3>Resume Text</h3>
+          </div>
           <pre className="resume-output">{props.resumeText || "Generate final output to populate the ATS-safe resume."}</pre>
         </div>
-        <div className="output-column">
-          <h3>Cover Letter</h3>
+        <div className="output-column output-column--cover">
+          <div className="output-column__heading">
+            <h3>Cover Letter</h3>
+            <button className="icon-button" onClick={() => props.copyText("cover", props.coverLetter)} disabled={!props.coverLetter}>
+              <Clipboard size={16} />
+              {props.copied === "cover" ? "Cover letter copied" : "Copy"}
+            </button>
+          </div>
           <textarea
             className="cover-letter"
             value={props.coverLetter}
             onChange={(event) => props.setCoverLetter(event.target.value)}
             spellCheck={false}
+            placeholder="Generate final output to populate the editable cover letter."
+            aria-label="Editable cover letter"
           />
-          <button className="icon-button" onClick={() => props.copyText("cover", props.coverLetter)} disabled={!props.coverLetter}>
-            <Clipboard size={16} />
-            {props.copied === "cover" ? "Copied" : "Copy Cover Letter"}
-          </button>
         </div>
-        <div className="output-column">
-          <h3>Feedback Summary</h3>
+        <div className="output-column output-column--feedback">
+          <div className="output-column__heading">
+            <h3>Feedback Summary</h3>
+          </div>
           <ReviewList title="" items={[...props.feedbackSummary, ...props.warnings]} empty="Feedback appears after generation." />
         </div>
       </div>
@@ -893,13 +968,14 @@ function ContextPanel(props: {
   match: ProfileMatch | null;
   notice: string;
   onDecide: (suggestion: Suggestion, status: "accepted" | "rejected") => void;
-  onCopy: (text: string) => void;
+  copied: string;
+  onCopy: (label: string, text: string) => void;
 }) {
-  const showSuggestions = props.step === "experience" || props.step === "skills" || props.step === "summary";
+  const showSuggestions = props.step === "summary";
   return (
     <aside className={`context-panel ${props.open ? "context-panel--open" : ""}`} aria-label="Live preview and suggestions">
       {showSuggestions ? (
-        <SuggestionPanel suggestions={props.suggestions} notice={props.notice} onDecide={props.onDecide} onCopy={props.onCopy} />
+        <SuggestionPanel suggestions={props.suggestions} notice={props.notice} copied={props.copied} onDecide={props.onDecide} onCopy={props.onCopy} />
       ) : (
         <LivePreview previewText={props.previewText} ats={props.ats} match={props.match} />
       )}
@@ -921,7 +997,8 @@ function LivePreview(props: { previewText: string; ats: AtsRubric | null; match:
       {props.match ? (
         <div className="preview-stats">
           <span>{props.match.supportedKeywords.length} supported</span>
-          <span>{props.match.missingKeywords.length} missing</span>
+          <span>{props.match.weaklySupportedKeywords.length} weak</span>
+          <span>{props.match.mustHaveGaps.length} must-have gaps</span>
         </div>
       ) : null}
     </section>
@@ -932,7 +1009,8 @@ function SuggestionPanel(props: {
   suggestions: Suggestion[];
   notice: string;
   onDecide: (suggestion: Suggestion, status: "accepted" | "rejected") => void;
-  onCopy: (text: string) => void;
+  copied: string;
+  onCopy: (label: string, text: string) => void;
 }) {
   return (
     <section className="panel context-section" aria-label="AI Suggestions">
@@ -945,44 +1023,78 @@ function SuggestionPanel(props: {
       </div>
       {!props.suggestions.length ? <div className="empty-state">Generate suggestions to see section-specific guidance here.</div> : null}
       {props.notice ? <div className="notice-state">{props.notice}</div> : null}
-      <div className="suggestion-list">
-        {props.suggestions.map((suggestion) => (
-          <article className={`suggestion suggestion--${suggestion.riskLevel}`} key={suggestion.id}>
-            <div className="suggestion__top">
-              <span>{suggestion.section}</span>
-              <StatusBadge suggestion={suggestion} />
-            </div>
-            <dl>
-              <dt>Original</dt>
-              <dd>{suggestion.originalText}</dd>
-              <dt>Suggested Rewrite</dt>
-              <dd>{suggestion.suggestedRewrite}</dd>
-              <dt>Reason</dt>
-              <dd>{suggestion.reason}</dd>
-            </dl>
-            <div className="suggestion__meta">
-              <span>{suggestion.confidence}% confidence</span>
-              <span>{suggestion.riskLevel} risk</span>
-              <span>{suggestion.profileSupported ? "profile-supported" : "Needs evidence"}</span>
-            </div>
-            <div className="button-row">
-              <button className="icon-button accept" onClick={() => props.onDecide(suggestion, "accepted")}>
-                <ThumbsUp size={16} />
-                Accept
-              </button>
-              <button className="icon-button reject" onClick={() => props.onDecide(suggestion, "rejected")}>
-                <ThumbsDown size={16} />
-                Reject
-              </button>
-              <button className="icon-button" onClick={() => props.onCopy(suggestion.suggestedRewrite)}>
-                <Clipboard size={16} />
-                Copy
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
+      <SuggestionCards suggestions={props.suggestions} copied={props.copied} onDecide={props.onDecide} onCopy={props.onCopy} />
     </section>
+  );
+}
+
+function InlineSuggestionSection(props: {
+  title: string;
+  suggestions: Suggestion[];
+  empty: string;
+  copied: string;
+  onDecide: (suggestion: Suggestion, status: "accepted" | "rejected") => void;
+  onCopy: (label: string, text: string) => void;
+}) {
+  return (
+    <section className="inline-suggestions" aria-label={props.title}>
+      <div className="inline-suggestions__heading">
+        <h3>{props.title}</h3>
+        <span>{props.suggestions.length ? `${props.suggestions.length} ready` : "Not generated yet"}</span>
+      </div>
+      {props.suggestions.length ? (
+        <SuggestionCards suggestions={props.suggestions} copied={props.copied} onDecide={props.onDecide} onCopy={props.onCopy} />
+      ) : (
+        <div className="empty-state">{props.empty}</div>
+      )}
+    </section>
+  );
+}
+
+function SuggestionCards(props: {
+  suggestions: Suggestion[];
+  copied: string;
+  onDecide: (suggestion: Suggestion, status: "accepted" | "rejected") => void;
+  onCopy: (label: string, text: string) => void;
+}) {
+  return (
+    <div className="suggestion-list">
+      {props.suggestions.map((suggestion) => (
+        <article className={`suggestion suggestion--${suggestion.riskLevel}`} key={suggestion.id}>
+          <div className="suggestion__top">
+            <span>{suggestion.section}</span>
+            <StatusBadge suggestion={suggestion} />
+          </div>
+          <dl>
+            <dt>Original</dt>
+            <dd>{suggestion.originalText}</dd>
+            <dt>Suggested Rewrite</dt>
+            <dd>{suggestion.suggestedRewrite}</dd>
+            <dt>Reason</dt>
+            <dd>{suggestion.reason}</dd>
+          </dl>
+          <div className="suggestion__meta">
+            <span>{suggestion.confidence}% confidence</span>
+            <span>{suggestion.riskLevel} risk</span>
+            <span>{suggestion.profileSupported ? "profile-supported" : "Needs evidence"}</span>
+          </div>
+          <div className="button-row">
+            <button className="icon-button accept" onClick={() => props.onDecide(suggestion, "accepted")}>
+              <ThumbsUp size={16} />
+              Accept
+            </button>
+            <button className="icon-button reject" onClick={() => props.onDecide(suggestion, "rejected")}>
+              <ThumbsDown size={16} />
+              Reject
+            </button>
+            <button className="icon-button" onClick={() => props.onCopy(`suggestion:${suggestion.id}`, suggestion.suggestedRewrite)}>
+              <Clipboard size={16} />
+              {props.copied === `suggestion:${suggestion.id}` ? "Suggestion copied" : "Copy"}
+            </button>
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -1208,6 +1320,12 @@ function buildSectionsFromProfile(profile: ResumeProfile): ResumeSections {
     .map((entry) => `- ${[entry.name, entry.issuer, entry.date].filter(Boolean).join(", ")}`)
     .join("\n");
   return sections;
+}
+
+function formatServiceWarnings(serviceWarnings?: string[]): string {
+  const unique = Array.from(new Set(serviceWarnings ?? []));
+  if (!unique.length) return "";
+  return `${unique.map((warning) => warning.replace(/\s*You can continue\.$/i, "").trim()).join(" ")} You can continue.`;
 }
 
 async function postJson<T>(url: string, payload: unknown): Promise<T> {

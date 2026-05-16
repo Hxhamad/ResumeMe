@@ -167,7 +167,11 @@ export function profileToEvidenceText(profile: ResumeProfile, userInfo: UserInfo
     for (const project of profile.projects.filter((item) => isUsefulText(item.name))) {
       lines.push(project.name);
       if (isUsefulText(project.description || "")) lines.push(`- ${project.description}`);
-      lines.push(...project.bullets.filter(isUsefulText).map((bullet) => `- ${stripBullet(bullet)}`));
+      lines.push(
+        ...project.bullets
+          .filter((bullet) => isUsefulText(bullet) && !/^tools?\s*:/i.test(stripBullet(bullet)))
+          .map((bullet) => `- ${stripBullet(bullet)}`)
+      );
       if (project.tools.length) lines.push(`- Tools: ${joinTextList(project.tools)}`);
     }
   }
@@ -340,7 +344,17 @@ function isUsefulText(value: string | undefined): value is string {
 }
 
 function uniqueStrings(items: string[]): string[] {
-  return Array.from(new Set(items.map(cleanText).filter(isUsefulText)));
+  const seen = new Set<string>();
+  const canonical = items.map(canonicalTerm).filter(isUsefulText);
+  const keys = new Set(canonical.map(normalizeTerm));
+  const output: string[] = [];
+  for (const item of canonical) {
+    const key = normalizeTerm(item);
+    if (seen.has(key) || isCoveredByCompositeTerm(key, keys)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+  return output;
 }
 
 function uniqueBy<T>(items: T[], getKey: (item: T) => string): T[] {
@@ -359,4 +373,39 @@ function isSafeCertificationName(value: string): boolean {
     !/\b(profile-supported skills|candidate with|professional with|credentials include)\b/i.test(value) &&
     /\b(certified|certification|certificate|license|aws certified|aws.*architect|pmp|cissp|scrum)\b/i.test(value)
   );
+}
+
+function canonicalTerm(value: string): string {
+  const text = cleanText(value);
+  const normalized = normalizeTerm(text);
+  if (/^node\s*js$/.test(normalized)) return "Node.js";
+  if (/^next\s*js$/.test(normalized)) return "Next.js";
+  if (/^github actions?$/.test(normalized)) return "GitHub Actions";
+  if (/^rest apis?$/.test(normalized)) return "REST APIs";
+  if (/^ci cd$/.test(normalized)) return "CI/CD";
+  if (/^aws$/.test(normalized)) return "AWS";
+  if (/^api$/.test(normalized)) return "API";
+  return text;
+}
+
+function normalizeTerm(value: string): string {
+  return cleanText(value).toLowerCase().replace(/[^a-z0-9+#.]+/g, " ").trim();
+}
+
+function isCoveredByCompositeTerm(key: string, keys: Set<string>): boolean {
+  const coveredBy: Record<string, string[]> = {
+    github: ["github actions"],
+    rest: ["rest apis"],
+    api: ["rest apis"]
+  };
+  if ((coveredBy[key] ?? []).some((composite) => keys.has(composite))) return true;
+  if (!key.includes(" ") && key.length > 2) {
+    return [...keys].some(
+      (candidate) =>
+        candidate !== key &&
+        candidate.split(/\s+/).includes(key) &&
+        /^(basic|beginner|intermediate|advanced|strong|expert)\s+/.test(candidate)
+    );
+  }
+  return false;
 }

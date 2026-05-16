@@ -38,11 +38,13 @@ export const KNOWN_TERMS = [
   "Google Cloud",
   "GCP",
   "Git",
+  "GitHub Actions",
   "GitHub",
   "GitLab",
   "CI/CD",
   "Terraform",
   "Linux",
+  "REST APIs",
   "REST",
   "GraphQL",
   "API",
@@ -150,6 +152,21 @@ export function normalizeTerm(value: string): string {
   return cleanText(value).toLowerCase().replace(/[^a-z0-9+#.]+/g, " ").trim();
 }
 
+export function canonicalTerm(value: string): string {
+  const text = cleanText(value);
+  const normalized = normalizeTerm(text);
+  if (!normalized) return "";
+  if (/^node\s*js$/.test(normalized)) return "Node.js";
+  if (/^next\s*js$/.test(normalized)) return "Next.js";
+  if (/^github actions?$/.test(normalized)) return "GitHub Actions";
+  if (/^rest apis?$/.test(normalized)) return "REST APIs";
+  if (/^ci cd$/.test(normalized)) return "CI/CD";
+  if (/^gcp$/.test(normalized)) return "GCP";
+  if (/^aws$/.test(normalized)) return "AWS";
+  if (/^api$/.test(normalized)) return "API";
+  return text;
+}
+
 export function uniqueStrings(values: unknown[], limit = 80): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
@@ -162,6 +179,13 @@ export function uniqueStrings(values: unknown[], limit = 80): string[] {
     if (output.length >= limit) break;
   }
   return output;
+}
+
+export function uniqueMeaningfulTerms(values: unknown[], limit = 80): string[] {
+  const canonical = uniqueStrings(values.map((value) => canonicalTerm(String(value ?? ""))), 120);
+  const keys = new Set(canonical.map(normalizeTerm));
+  const output = canonical.filter((term) => !isCoveredByCompositeTerm(term, keys));
+  return output.slice(0, limit);
 }
 
 export function clampScore(value: number): number {
@@ -179,7 +203,7 @@ export function includesTerm(haystack: string, term: string): boolean {
 }
 
 export function findKnownTerms(text: string, terms = KNOWN_TERMS): string[] {
-  return uniqueStrings(
+  return uniqueMeaningfulTerms(
     terms.filter((term) => includesTerm(text, term) || includesTerm(text, term.replace(".", "")))
   );
 }
@@ -224,6 +248,10 @@ export function extractSection(text: string, headings: string[]): string[] {
     "skills",
     "technical skills",
     "core skills",
+    "tools",
+    "tooling",
+    "platforms",
+    "tools platforms",
     "experience",
     "professional experience",
     "work experience",
@@ -238,7 +266,7 @@ export function extractSection(text: string, headings: string[]): string[] {
   let collecting = false;
   const output: string[] = [];
   for (const line of lines) {
-    const normalized = normalizeTerm(line.replace(/:$/, ""));
+    const normalized = normalizeTerm(line.replace(/:.*$/, ""));
     const isTarget = normalizedHeadings.includes(normalized);
     const isAnyHeading = headingSet.has(normalized);
     if (isTarget) {
@@ -298,4 +326,23 @@ export function makeSuggestionId(section: string, index: number, text: string): 
 
 export function compactJoin(values: string[], separator = " | "): string {
   return values.map(cleanText).filter(Boolean).join(separator);
+}
+
+function isCoveredByCompositeTerm(term: string, keys: Set<string>): boolean {
+  const key = normalizeTerm(term);
+  const coveredBy: Record<string, string[]> = {
+    github: ["github actions"],
+    rest: ["rest apis"],
+    api: ["rest apis"]
+  };
+  if ((coveredBy[key] ?? []).some((composite) => keys.has(composite))) return true;
+  if (!key.includes(" ") && key.length > 2) {
+    return [...keys].some(
+      (candidate) =>
+        candidate !== key &&
+        candidate.split(/\s+/).includes(key) &&
+        /^(basic|beginner|intermediate|advanced|strong|expert)\s+/.test(candidate)
+    );
+  }
+  return false;
 }

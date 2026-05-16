@@ -7,6 +7,7 @@ import {
   sentenceSplit,
   SOFT_SKILLS,
   toLines,
+  uniqueMeaningfulTerms,
   uniqueStrings
 } from "./text.js";
 
@@ -35,9 +36,7 @@ export function parseJobFallback(jobDescription: string, targetRole = ""): JobEx
   const seniority = inferSeniority(text);
   const hardSkills = findKnownTerms(text);
   const softSkills = SOFT_SKILLS.filter((skill) => includesTerm(text, skill));
-  const certifications = uniqueStrings(
-    sentences.filter((sentence) => /\b(certified|certification|certificate|license|aws certified|pmp|cissp|scrum)\b/i.test(sentence))
-  );
+  const certifications = extractCertifications(sentences);
   const mustHaveRequirements = requirementCandidates(sentences, "must");
   const preferredRequirements = requirementCandidates(sentences, "preferred");
   const responsibilities = uniqueStrings(
@@ -105,19 +104,43 @@ function makeRequirement(text: string, category: "must" | "preferred"): Requirem
 }
 
 function splitRequirementSentence(sentence: string, category: "must" | "preferred"): string[] {
-  const afterColon = sentence.includes(":") ? sentence.split(":").slice(1).join(":") : sentence;
-  const parts = afterColon
-    .split(/,\s+|\s+and\s+/i)
-    .map((part) =>
-      part
-        .replace(/\b(required|must|need|minimum|preferred|nice to have|bonus|plus)\b:?/gi, "")
-        .replace(/^and\s+/i, "")
-        .replace(/\.+$/g, "")
-        .trim()
-    )
-    .filter((part) => part.length > 2);
-  if (parts.length > 1) {
-    return parts.map((part) => (category === "must" ? `Evidence for ${part}` : `Preferred evidence for ${part}`));
+  const hasColon = sentence.includes(":");
+  const source = hasColon ? sentence.split(":").slice(1).join(":") : sentence;
+  const withoutQualifier = cleanRequirementText(source, category);
+  const parts = splitRequirementList(withoutQualifier, hasColon).map((part) => cleanRequirementText(part, category));
+  return uniqueMeaningfulTerms(parts.length ? parts : [withoutQualifier], 16).filter((part) => part.length > 2);
+}
+
+function extractCertifications(sentences: string[]): string[] {
+  return uniqueMeaningfulTerms(
+    sentences
+      .flatMap((sentence) => splitRequirementSentence(sentence, "preferred"))
+      .filter((item) => /\b(certified|certification|certificate|license|aws certified|pmp|cissp|scrum)\b/i.test(item)),
+    20
+  );
+}
+
+function splitRequirementList(text: string, fromColonList: boolean): string[] {
+  if (!text) return [];
+  const commaParts = text.split(/,\s*/).filter(Boolean);
+  if (commaParts.length > 1) {
+    return commaParts.flatMap((part, index) => {
+      const isLast = index === commaParts.length - 1;
+      return isLast ? part.split(/^\s*and\s+/i).filter(Boolean) : [part];
+    });
   }
-  return [sentence];
+  return fromColonList ? text.split(/\s+and\s+/i) : [text];
+}
+
+function cleanRequirementText(value: string, category: "must" | "preferred"): string {
+  const cleaned = cleanText(value)
+    .replace(/^(required|requirements?|must(?:\s+have)?|need(?:s|ed)?(?:\s+to)?|minimum|at least|proficient(?:\s+in)?|strong experience(?:\s+with| in)?|hands-on(?:\s+with)?|responsible for|preferred|nice to have|bonus|plus|familiarity(?:\s+with)?|advantage|desired)\s*:?\s*/i, "")
+    .replace(/^and\s+/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/\.+$/g, "")
+    .trim();
+  if (!cleaned) return "";
+  const text = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  if (category === "preferred" && !/^preferred\b/i.test(text)) return text;
+  return text;
 }

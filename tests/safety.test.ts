@@ -3,8 +3,9 @@ import { calculateAtsRubric } from "../server/lib/ats.js";
 import { parseJobFallback } from "../server/lib/jobParser.js";
 import { parseJsonPayload } from "../server/lib/json.js";
 import { matchProfileFallback } from "../server/lib/matcher.js";
+import { callMiniMaxJson } from "../server/lib/minimaxClient.js";
 import { parseProfileFallback } from "../server/lib/profileParser.js";
-import { formatResumeText, guardResumeText, sanitizeResumeText } from "../server/lib/resumeFormatter.js";
+import { feedbackSummaryFallback, formatResumeText, generateCoverLetterFallback, guardResumeText, sanitizeResumeText } from "../server/lib/resumeFormatter.js";
 import { generateSuggestionsFallback } from "../server/lib/suggestions.js";
 import { validateResumeProfile } from "../server/lib/validators.js";
 
@@ -35,6 +36,11 @@ const jobText = `Senior Full Stack Engineer
 Required: TypeScript, React, Node.js, Docker, Kubernetes, GitHub Actions, REST APIs, and cloud deployment experience.
 Preferred: AWS certification, CI/CD automation, performance optimization, and documentation.`;
 
+const qaJobText = `Senior Full Stack Engineer
+Required: TypeScript, React, Node.js, Docker, Kubernetes, GitHub Actions, REST APIs, production service ownership, and cloud deployment experience.
+Must collaborate with product and design teams, improve developer workflows, and maintain production services.
+Preferred: AWS certification, CI/CD automation, performance optimization, and strong documentation.`;
+
 const weakProfile = `Omar Saleh
 omar.saleh@example.com
 +966 55 222 3000
@@ -54,6 +60,36 @@ describe("deterministic parsing and matching", () => {
     expect(job.mustHaveRequirements.length).toBeGreaterThan(0);
   });
 
+  it("normalizes fallback job requirements into readable user-facing items", () => {
+    const job = parseJobFallback(qaJobText, "Senior Full Stack Engineer");
+    const musts = job.mustHaveRequirements.map((item) => item.text);
+
+    expect(musts).toContain("GitHub Actions");
+    expect(musts).toContain("REST APIs");
+    expect(musts).toContain("Production service ownership");
+    expect(musts).toContain("Collaborate with product and design teams");
+    expect(musts).toContain("Improve developer workflows");
+    expect(musts).toContain("Maintain production services");
+    expect(musts.join(" ")).not.toMatch(/Evidence for|design teams\./i);
+  });
+
+  it("dedupes composite skills without noisy substrings", () => {
+    const profile = parseProfileFallback(`${strongProfile}
+Skills: TypeScript, React, Node.js, PostgreSQL, Docker, GitHub Actions, GitHub, REST APIs, REST, API, AWS`);
+    const job = parseJobFallback(qaJobText);
+
+    expect(profile.skills).toContain("GitHub Actions");
+    expect(profile.skills).toContain("REST APIs");
+    expect(profile.skills).not.toContain("GitHub");
+    expect(profile.skills).not.toContain("REST");
+    expect(profile.skills).not.toContain("API");
+    expect(job.hardSkills).toContain("GitHub Actions");
+    expect(job.hardSkills).toContain("REST APIs");
+    expect(job.hardSkills).not.toContain("GitHub");
+    expect(job.hardSkills).not.toContain("REST");
+    expect(job.hardSkills).not.toContain("API");
+  });
+
   it("infers minimal contact fields without creating fake experience", () => {
     const profile = parseProfileFallback(minimalProfile);
     expect(profile.userInfo.fullName).toBe("Hamad Alshamrani");
@@ -71,12 +107,29 @@ describe("deterministic parsing and matching", () => {
     expect(bullets.join(" ")).not.toMatch(/Skills:/i);
   });
 
+  it("keeps qualified skills without adding duplicate base skills", () => {
+    const profile = parseProfileFallback(weakProfile);
+    expect(profile.skills).toContain("basic JavaScript");
+    expect(profile.skills).not.toContain("JavaScript");
+    expect(profile.skills.some((skill) => /^tools?:/i.test(skill))).toBe(false);
+  });
+
   it("flags missing must-haves without unsupported claims", () => {
     const profile = parseProfileFallback(minimalProfile);
     const job = parseJobFallback(jobText);
     const match = matchProfileFallback(profile, job);
     expect(match.mustHaveGaps.length).toBeGreaterThan(0);
     expect(match.unsupportedClaims.join(" ")).toMatch(/No profile evidence/);
+  });
+
+  it("summarizes strong and weak keyword support without contradicting ATS scoring", () => {
+    const profile = parseProfileFallback(weakProfile);
+    const job = parseJobFallback(jobText);
+    const match = matchProfileFallback(profile, job);
+    const feedback = feedbackSummaryFallback(match);
+
+    expect(feedback[0]).toMatch(/strongly supported/);
+    expect(feedback[0]).toMatch(/weakly supported/);
   });
 });
 
@@ -108,6 +161,31 @@ describe("resume safety formatting", () => {
     expect(resume).not.toMatch(/Professional Experience[\s\S]*-\s*Projects/);
     expect(resume).not.toContain("50%");
     expect(resume).not.toContain("$");
+  });
+
+  it("dedupes project tool bullets into one tools line", () => {
+    const profile = parseProfileFallback(`Maya Chen
+maya@example.com
+Projects
+Resume Optimizer
+- Created a React and Node.js tool for resume parsing.
+- Tools: React, Node.js
+Skills: React, Node.js`);
+    const resume = formatResumeText(profile, parseJobFallback(jobText));
+    const toolLines = resume.match(/^- Tools: React, Node\.js$/gm) ?? [];
+
+    expect(toolLines).toHaveLength(1);
+    expect(resume).not.toMatch(/- Tools: React, Node\.js[\s\S]*- Tools: React, Node\.js/);
+  });
+
+  it("keeps deterministic cover letters in first person and out of submission-note wording", () => {
+    const profile = parseProfileFallback(weakProfile);
+    const job = parseJobFallback(jobText);
+    const match = matchProfileFallback(profile, job);
+    const coverLetter = generateCoverLetterFallback(profile, job, match);
+
+    expect(coverLetter).toMatch(/My submitted profile shows support/i);
+    expect(coverLetter).not.toMatch(/Omar Saleh's profile|Before submitting/i);
   });
 
   it("removes visible placeholders and contact bullets during sanitization", () => {
@@ -173,5 +251,28 @@ describe("ATS, suggestions, and validation", () => {
 
   it("recovers strict JSON wrapped in markdown fences", () => {
     expect(parseJsonPayload("```json\n{\"ok\":true}\n```")).toEqual({ ok: true });
+  });
+
+  it("keeps MiniMax fallback status separate from safety warnings", async () => {
+    const originalKey = process.env.MINIMAX_API_KEY;
+    delete process.env.MINIMAX_API_KEY;
+    const result = await callMiniMaxJson({
+      taskName: "profile parsing",
+      messages: [],
+      temperature: 0,
+      fallback: { ok: true },
+      validate: (_value, fallback) => fallback,
+      timeoutMs: 1
+    });
+    if (originalKey) {
+      process.env.MINIMAX_API_KEY = originalKey;
+    } else {
+      delete process.env.MINIMAX_API_KEY;
+    }
+
+    expect(result.aiUsed).toBe(false);
+    expect(result.warnings).toEqual([]);
+    expect(result.serviceWarnings.join(" ")).toMatch(/fallback parser used\. You can continue\./i);
+    expect(result.serviceWarnings.join(" ")).not.toMatch(/failed|unsupported claim/i);
   });
 });

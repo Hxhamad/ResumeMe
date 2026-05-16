@@ -14,6 +14,7 @@ interface ChatJsonResult<T> {
   data: T;
   aiUsed: boolean;
   warnings: string[];
+  serviceWarnings: string[];
 }
 
 const ENDPOINT = "https://api.minimax.io/v1/chat/completions";
@@ -29,7 +30,8 @@ export async function callMiniMaxJson<T>(options: ChatJsonOptions<T>): Promise<C
     return {
       data: options.fallback,
       aiUsed: false,
-      warnings: [`MiniMax API key is missing; used deterministic fallback for ${options.taskName}.`]
+      warnings: [],
+      serviceWarnings: [serviceFallbackMessage(options.taskName, "missing api key")]
     };
   }
 
@@ -47,7 +49,7 @@ export async function callMiniMaxJson<T>(options: ChatJsonOptions<T>): Promise<C
       });
       const parsed = parseJsonPayload(content);
       const data = options.validate(parsed, options.fallback);
-      return { data, aiUsed: true, warnings: [] };
+      return { data, aiUsed: true, warnings: [], serviceWarnings: [] };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown MiniMax error";
       lastInvalidOutput = message;
@@ -55,7 +57,8 @@ export async function callMiniMaxJson<T>(options: ChatJsonOptions<T>): Promise<C
         return {
           data: options.fallback,
           aiUsed: false,
-          warnings: [`MiniMax ${options.taskName} failed: ${message}. Used deterministic fallback.`]
+          warnings: [],
+          serviceWarnings: [serviceFallbackMessage(options.taskName, message)]
         };
       }
       messages = [
@@ -71,12 +74,36 @@ export async function callMiniMaxJson<T>(options: ChatJsonOptions<T>): Promise<C
   return {
     data: options.fallback,
     aiUsed: false,
-    warnings: [`MiniMax ${options.taskName} failed JSON validation after retries. Used deterministic fallback.`]
+    warnings: [],
+    serviceWarnings: [serviceFallbackMessage(options.taskName, "json validation")]
   };
 }
 
 function getApiKey(): string {
   return (process.env.MINIMAX_API_KEY || "").trim().replace(/^<|>$/g, "");
+}
+
+function serviceFallbackMessage(taskName: string, reason: string): string {
+  const fallback = fallbackLabel(taskName);
+  if (/abort|timeout|timed out|operation was aborted/i.test(reason)) {
+    return `AI timed out, ${fallback} used. You can continue.`;
+  }
+  if (/api key|configured/i.test(reason)) {
+    return `AI is not configured, ${fallback} used. You can continue.`;
+  }
+  if (/json|schema|valid/i.test(reason)) {
+    return `AI response needed cleanup, ${fallback} used. You can continue.`;
+  }
+  return `AI was unavailable, ${fallback} used. You can continue.`;
+}
+
+function fallbackLabel(taskName: string): string {
+  if (/profile parsing|job extraction/i.test(taskName)) return "fallback parser";
+  if (/matching/i.test(taskName)) return "deterministic matcher";
+  if (/suggestion/i.test(taskName)) return "deterministic suggestions";
+  if (/cover letter/i.test(taskName)) return "deterministic cover letter";
+  if (/resume/i.test(taskName)) return "deterministic resume builder";
+  return "deterministic fallback";
 }
 
 async function sendChatRequest(options: {

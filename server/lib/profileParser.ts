@@ -20,6 +20,7 @@ import {
   looksLikeMissingValue,
   parseDelimitedList,
   toLines,
+  uniqueMeaningfulTerms,
   uniqueStrings
 } from "./text.js";
 
@@ -93,7 +94,11 @@ function inferSkills(text: string): string[] {
   const labeled = extractLabeledValue(text, ["skills", "technical skills", "core skills"]);
   const section = extractSection(text, ["skills", "technical skills", "core skills"]);
   const fromLabels = parseDelimitedList([labeled, ...section].join("\n"));
-  return uniqueStrings([...fromLabels, ...findKnownTerms(text)], 60);
+  return uniqueMeaningfulTerms([...fromLabels.filter(isSkillCandidate), ...findKnownTerms(text)], 60);
+}
+
+function isSkillCandidate(item: string): boolean {
+  return !/^(tools?|tooling|platforms?)\s*:/i.test(cleanText(item));
 }
 
 function inferCertifications(text: string): CertificationEntry[] {
@@ -140,8 +145,13 @@ function inferProjects(text: string): ProjectEntry[] {
       continue;
     }
     if (!current) current = { name: "Project", tools: [], bullets: [] };
+    if (/^tools?\s*:/i.test(line)) {
+      const listedTools = parseDelimitedList(line.replace(/^tools?\s*:\s*/i, ""));
+      current.tools = uniqueMeaningfulTerms([...current.tools, ...listedTools, ...findKnownTerms(line)]);
+      continue;
+    }
     current.bullets.push(line);
-    current.tools = uniqueStrings([...current.tools, ...findKnownTerms(line)]);
+    current.tools = uniqueMeaningfulTerms([...current.tools, ...findKnownTerms(line)]);
   }
   if (current && (current.description || current.bullets.length || current.name !== "Project")) projects.push(current);
   return projects.filter((project) => project.name !== "Project" || project.bullets.length > 0);
